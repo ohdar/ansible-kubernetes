@@ -1,0 +1,178 @@
+How to install Kubernetes in Ubuntu 20.04 LTS Server
+
+Ubuntu 20.04 Download 
+What You'll Need At least four VM on Proxmox
+
+------------ Command for ALL VM's --------------------
+Set-up Process
+IP Address to Static IP
+sudo nano /etc/netplan/filename.yaml
+sudo netplan apply
+Edit the host name
+Edit /etc/hosts and /etc/hostname 
+
+For example:
+
+ k8s-master - 192.168.1.18
+ k8s-worker1 - 192.168.1.19
+ k8s-worker2 - 192.168.1.20
+ k8s-worker3 - 192.168.1.21
+
+---------------------Step--------------------
+Install all updates
+    sudo apt update && sudo apt dist-upgrade
+    Reboot
+Reboot each VM:
+   sudo reboot
+
+Create a user for yourself
+ sudo adduser brajesh
+ usermod -aG sudo brajesh
+
+---------------------Step--------------------
+Install Docker
+    curl -sSL get.docker.com | sh
+    sudo usermod -aG docker brajesh
+
+Set Docker daemon options Edit the daemon.json file (this file most likely won't exist yet)
+
+ sudo nano /etc/docker/daemon.json
+ {
+   "exec-opts": ["native.cgroupdriver=systemd"],
+   "log-driver": "json-file",
+   "log-opts": {
+     "max-size": "100m"
+   },
+   "storage-driver": "overlay2"
+ }
+
+---------------------Step--------------------
+
+Enable routing. Find the following line in the file: sudo nano /etc/sysctl.conf
+ #net.ipv4.ip_forward=1
+Uncomment that line.
+
+Disable Swap in all VM. Find the following line in the file: sudo nano /etc/fstab
+  #/swap.img  none  swap  sw  0   0
+Comment that line.
+
+Reboot again
+   sudo reboot
+
+---------------------Step--------------------
+
+Test that docker is working properly
+Check docker daemon:
+    
+     systemctl status docker
+
+Run the hello-world container:
+   docker run hello-world
+
+Add Kubernetes repository
+   sudo nano /etc/apt/sources.list.d/kubernetes.list
+
+Add:
+   deb http://apt.kubernetes.io/ kubernetes-xenial main
+
+---------------------Step--------------------
+Add the GPG key to the VM:
+
+ curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo apt-key add -
+
+---------------------Step--------------------
+
+Install required Kubernetes packages
+      sudo apt update
+      sudo apt install kubeadm kubectl kubelet
+Note: If you get errors with the first command, wait a few minutes and try again.
+
+
+---------------------Step--------------------
+-------------------------Master-only Commands-----------------------------
+Initialize Kubernetes
+Run:
+    sudo kubeadm init --pod-network-cidr=10.244.0.0/16
+
+Once this runs, you will get some output that will include the join command, but don't join nodes yet. Copy this somewhere for later.
+
+Set up config directory
+The previous command will give you three additional commands to run, most likely these:
+
+    mkdir -p ~.kube
+    sudo cp /etc/kubernetes/admin.conf ~/.kube/config
+    sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+Go ahead and run those, but if it recommends different commands, run those instead.
+
+---------------------Step--------------------
+
+Install flannel network driver
+ kubectl apply -f https://raw.githubusercontent.com/coreos/flannel/master/Documentation/kube-flannel.yml
+
+Note: The lack of sudo is intentional
+
+---------------------Step--------------------
+
+Make sure all the pods come up
+kubectl get pods --all-namespaces
+Join worker nodes to the cluster
+Once all of the pods have come up, run the join command on each worker node. This command was provided in an earlier step.
+
+Check status of nodes
+See if the nodes have joined successfully, run the following command a few times until everything is ready:
+
+ kubectl get nodes
+
+---------------------Step--------------------
+Dashbard Access 
+kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/v2.2.0/aio/deploy/recommended.yaml
+
+namespace/kubernetes-dashboard created
+serviceaccount/kubernetes-dashboard created
+service/kubernetes-dashboard created
+secret/kubernetes-dashboard-certs created
+secret/kubernetes-dashboard-csrf created
+secret/kubernetes-dashboard-key-holder created
+configmap/kubernetes-dashboard-settings created
+role.rbac.authorization.k8s.io/kubernetes-dashboard created
+clusterrole.rbac.authorization.k8s.io/kubernetes-dashboard created
+rolebinding.rbac.authorization.k8s.io/kubernetes-dashboard created
+clusterrolebinding.rbac.authorization.k8s.io/kubernetes-dashboard created
+deployment.apps/kubernetes-dashboard created
+service/dashboard-metrics-scraper created
+Warning: spec.template.metadata.annotations[seccomp.security.alpha.kubernetes.io/pod]: deprecated since v1.19; use the "seccompProfile" field instead
+deployment.apps/dashboard-metrics-scraper created
+
+Admin User Creation for Dashboard Access
+kubectl apply -f dashboard-adminuser.yaml
+
+---------------------Step--------------------
+kubectl get ns
+
+kubectl -n kubernetes-dashboard get all
+kubectl -n kubernetes-dashboard describe service kubernetes-dashboard
+kubectl -n kubernetes-dashboard port-forward kubernetes-dashboard-78c79f97b4-hzr7v 8000:8443 [failed]
+
+kubectl -n kubernetes-dashboard edit svc kubernetes-dashboard  [passed]
+
+  nodePort 32323  -- addnodeport below targetPort ----
+  type: NodePort --- change ClusterIP to NodePort -----
+
+  kubectl -n kubernetes-dashboard get sa
+  kubectl -n kubernetes-dashboard describe sa admin-user
+  kubectl -n kubernetes-dashboard describe secret admin-user-token-6c8s2  ---- copy token from this command ----
+
+----------------Workstation Instruction and Commands------------------------
+---------------------Step--------------------
+Open in Browser : https://192.168.1.18:32323/#/login
+
+Paste above copied secret token and login to dashboard
+
+---------------------Step--------------------
+
+kubectl commands for Workstation Without login in to the Kubernetes Master Server
+For Runing Local command effactive to Kubernetes Master server 
+
+scp brajesh@192.168.1.18:~/.kube/config ~/.kube/config
+
