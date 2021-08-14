@@ -1,0 +1,69 @@
+centos7 hostname and ip configuration commands
+
+hostname edit command
+  $>nmtui
+ip configuration edit command
+  $>nmtui edit eth0
+
+permission for execution
+chmod a+rx prep.sh
+
+#-------------File copy Between Servers ---------------------------------
+
+1. SCP From Remote to Local
+In order to use SCP to download a single file to your local host, use this command:
+  scp username@hostname:path/to/remote/file.txt /path/to/local/destination
+
+You can also use a wildcard (*) to download multiple files at a time:
+  scp username@hostname:path/to/remote/*.txt /path/to/local/destination
+
+To download an entire folder, simply use the “recursive” switch:
+  scp -r username@hostname:path/to/remote/folder /path/to/local/destination
+
+2. SCP From Local to Remote
+Using SCP to upload a file to a remote host is pretty much the same as when you perform a download, except that you need to invert the “remote”  and “local” parameters.
+
+Here’s how to upload a single file to a remote host:
+  scp /path/to/local/file.txt username@hostname:path/to/remote/destination
+
+You can also use a wildcard (*) to upload multiple files at a time:
+  scp /path/to/local/*.txt username@hostname:path/to/remote/destination
+
+To upload an entire folder, use the “recursive” switch:
+  scp -r /path/to/local/folder username@hostname:path/to/remote/destination
+
+3. SCP Between Two Remote Hosts
+Again, the syntax is pretty similar except this time you need to replace the local host by another remote host.
+Here’s how to copy a single file between two remote hosts:
+  scp username@sourcehost:path/to/source/file.txt username@desthost:path/to/remote/folder
+
+Using a wildcard (*) to copy multiple files at a time between two hosts:
+  scp username@sourcehost:path/to/source/*.txt username@desthost:path/to/remote/folder
+
+And finally, copying an entire folder using the “recursive” switch:
+  scp username@sourcehost:path/to/folder username@desthost:path/to/remote
+
+4. Advanced SCP Command Switches and Parameters
+Of course, there is so much more to SCP that I won’t go through in this post but here are few command switches and parameters that might come in handful:
+Using SCP on a different port
+By default, SCP uses port 22, which is the default port for SSH. To use a different port, use the “-P” switch:
+
+  scp -P 2022 /path/to/local/file.txt username@hostname:path/to/remote/destination
+
+Note that the specified port will only apply to the source host when copying files between two remote hosts.
+
+Using SCP with SSH key authentication
+
+Assuming the remote server is configured to accept SSH key authentication and the proper public key file is present, use the “-i” switch to specify the private key file:
+
+  scp -i /path/to/id_rsa /path/to/local/file.txt username@hostname:path/to/remote/destination
+
+Debugging SCP transfers
+
+If you happen to encounter some problem to either connect to a remote host or to copy files, use the “-v” switch to enable the verbose mode:
+  scp -v /path/to/local/file.txt username@hostname:path/to/remote/destination
+
+This will print debugging messages to the console that might help you fix the problem.
+If you have SCP use examples to share, don’t hesitate to post them in the comments below.
+
+
