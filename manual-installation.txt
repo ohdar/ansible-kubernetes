@@ -145,7 +145,7 @@ Warning: spec.template.metadata.annotations[seccomp.security.alpha.kubernetes.io
 deployment.apps/dashboard-metrics-scraper created
 
 Admin User Creation for Dashboard Access
-kubectl apply -f dashboard-adminuser.yaml
+   kubectl apply -f dashboard-adminuser.yaml
 
 ---------------------Step--------------------
 kubectl get ns

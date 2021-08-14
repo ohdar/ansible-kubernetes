@@ -1,0 +1,354 @@
+Hey everyone. as you may already know, starting from V1.20, Kubernetes will be deprecating Docker runtime engines, meaning that this version will be the last one to support Docker, and the next future release will no longer be supporting it, as it’s not a CRI-compliant (Container Runtime Interface) engine. In this tutorial, I will demonstrate how to use other alternatives, like CRI-O runtime engine. I assume that you are already familiar with Kubernetes deployments, so, I will directly head into the points of focus,
+
+CRI-O must run the same version as the deployed Kubernetes, meaning, if you are intending to deploy Kubernetes version 1.20, CRI-O must also be at the same release, 1.20.
+
+Used versions:
+
+	OS: Centos 7 (7.9)
+	Kubernetes: V1.20
+	CRI: CRI-O v1.20
+	CNI plugin: Calico
+
+The operating system I’m using is a fresh installation. Should you have other container runtime engines installed, please remove first. I will be using few virtual machines hosted on PROXMOX 6.2 for this demo, it would be better if you take a snapshot prior to all of the mentioned actions in this article.
+
+This guide of steps, and scripts were prepared from the product documentation, and tested on CentOS 7, so, it will make your life much easier. For other OS versions, please refer to the relevant documentation to make the required changes.
+
+Now, let’s begin the preparation and deployment.
+
+Step-1- use the following script to update, prepare, and install all of the required binaries for our setup. I will put this script on all of the nodes that will participate in the K8S cluster (including the master nodes). Again, make sure you install both Kubernetes and CRI-O at the same version. I’m using v1.20 in this demo. set the OS version, and other component versions in the following script. This script is already pre-configured to install Kubernetes and CRI-O v1.20 on Centos 7 version.
+
+#----------------------------script start---save as prep.sh in all nodes and run it----------------------------------
+##Update the OS
+yum update -y
+ 
+## Install yum-utils, bash completion, git, and more
+yum install yum-utils nfs-utils bash-completion git -y
+ 
+##Disable firewall starting from Kubernetes v1.19 onwards
+systemctl disable firewalld --now
+ 
+ 
+## letting ipTables see bridged networks
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+br_netfilter
+EOF
+ 
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.bridge.bridge-nf-call-ip6tables = 1
+net.bridge.bridge-nf-call-iptables = 1
+EOF
+sudo sysctl --system
+ 
+##
+## iptables config as specified by CRI-O documentation
+# Create the .conf file to load the modules at bootup
+cat <<EOF | sudo tee /etc/modules-load.d/crio.conf
+overlay
+br_netfilter
+EOF
+ 
+ 
+sudo modprobe overlay
+sudo modprobe br_netfilter
+ 
+ 
+# Set up required sysctl params, these persist across reboots.
+cat <<EOF | sudo tee /etc/sysctl.d/99-kubernetes-cri.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.ipv4.ip_forward                 = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+ 
+sudo sysctl --system
+ 
+ 
+###
+## configuring Kubernetes repositories
+cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
+enabled=1
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
+exclude=kubelet kubeadm kubectl
+EOF
+ 
+## Set SELinux in permissive mode (effectively disabling it)
+sudo setenforce 0
+sudo sed -i 's/^SELINUX=enforcing$/SELINUX=permissive/' /etc/selinux/config
+ 
+### Disable swap
+swapoff -a
+ 
+##make a backup of fstab
+cp -f /etc/fstab /etc/fstab.bak
+ 
+##Renove swap from fstab
+sed -i '/swap/d' /etc/fstab
+ 
+ 
+##Refresh repo list
+yum repolist -y
+ 
+ 
+## Install CRI-O binaries
+##########################
+ 
+#Operating system   $OS
+#Centos 8   CentOS_8
+#Centos 8 Stream    CentOS_8_Stream
+#Centos 7   CentOS_7
+ 
+ 
+#set OS version
+OS=CentOS_7
+ 
+#set CRI-O
+VERSION=1.20
+ 
+# Install CRI-O
+sudo curl -L -o /etc/yum.repos.d/devel:kubic:libcontainers:stable.repo https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/$OS/devel:kubic:libcontainers:stable.repo
+sudo curl -L -o /etc/yum.repos.d/devel:kubic:libcontainers:stable:cri-o:$VERSION.repo https://download.opensuse.org/repositories/devel:kubic:libcontainers:stable:cri-o:$VERSION/$OS/devel:kubic:libcontainers:stable:cri-o:$VERSION.repo
+sudo yum install cri-o -y
+ 
+ 
+##Install Kubernetes, specify Version as CRI-O
+yum install -y kubelet-1.20.0-0 kubeadm-1.20.0-0 kubectl-1.20.0-0 --disableexcludes=kubernetes
+
+#----------------------------script end---save as prep.sh in all nodes and run it----------------------------------
+
+
+Step-2- after running the script, make sure that the installed versions of Kubernetes and CRI-O are matching.
+
+	rpm -qa | grep kube
+	rpm -qa | grep cri-o
+
+
+Step-3- Couple of modifications should be made to kubelet service config to make it work fine with CRI-O, hoping that this would be automatically fixed in future releases of Kubernetes. CRI-O uses “systemd” as the cgroup driver. Follow these instructions carefully. Edit this file at “/usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf”, and make sure you add the highlighted lines as indicated below.
+
+	# Note: This dropin only works with kubeadm and kubelet v1.11+
+	[Service]
+	Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf"
+	Environment="KUBELET_CONFIG_ARGS=--config=/var/lib/kubelet/config.yaml"
+	# This is a file that "kubeadm init" and "kubeadm join" generates at runtime, populating the KUBELET_KUBEADM_ARGS variable dynamically
+	EnvironmentFile=-/var/lib/kubelet/kubeadm-flags.env
+	# This is a file that the user can use for overrides of the kubelet args as a last resort. Preferably, the user should use
+	# the .NodeRegistration.KubeletExtraArgs object in the configuration files instead. KUBELET_EXTRA_ARGS should be sourced from this file.
+	## The following line to be added for CRI-O 
+	Environment="KUBELET_CGROUP_ARGS=--cgroup-driver=systemd"
+	EnvironmentFile=-/etc/sysconfig/kubelet
+	ExecStart=
+	ExecStart=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_KUBEADM_ARGS $KUBELET_EXTRA_ARGS $KUBELET_CGROUP_ARGS
+
+
+Step-4- Now, let’s reload daemon and then start CRI-O and kubelet services.
+	systemctl daemon-reload
+	systemctl enable crio --now
+	systemctl enable kubelet --now
+
+	systemctl status kubelet
+	systemctl status crio
+	systemctl status cri-o
+
+Step-5- repeat all of the previous steps to all of the nodes you are intending to join to the cluster
+
+
+#--------------------Master Only Commands Start-------------------------
+Step-6- initiate the cluster using kubeadm method
+	kubeadm init  --pod-network-cidr=10.244.0.0/16
+
+Your Kubernetes control-plane has initialized successfully!
+
+########################################ScreenText-after-complition-of-above-command#######################
+To start using your cluster, you need to run the following as a regular user:
+
+  mkdir -p $HOME/.kube
+  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+Alternatively, if you are the root user, you can run:
+
+  export KUBECONFIG=/etc/kubernetes/admin.conf
+
+You should now deploy a pod network to the cluster.
+Run "kubectl apply -f [podnetwork].yaml" with one of the options listed at:
+  https://kubernetes.io/docs/concepts/cluster-administration/addons/
+
+Then you can join any number of worker nodes by running the following on each as root:
+
+kubeadm join 192.168.1.22:6443 --token p4qrma.yc17mron79fbtzk3 --discovery-token-ca-cert-hash sha256:7ea703793e693fd6995e76b7609590c15d1d76b59cc62332336fca4387ab3145
+
+########################################ScreenText-after-complition-of-above-command#######################
+
+Step-7- after having a successful initiation. add env variable to the path of the KUBECONFIG file
+	
+	export KUBECONFIG=/etc/kubernetes/admin.conf
+
+Don’t forget to take a copy of the join token command to add worker nodes to the cluster, otherwise, you’d need to regenerate aother token later
+
+
+Step-8- let’s examine the cluster and check the status of control plane pods    
+    
+	kubectl get nodes    
+	kubectl get pod --all-namespaces
+	kubectl get pod --all-namespaces -o wide
+
+All pods are healthy and in a good state, however, the assigned IPs to the CoreDNS pods are obtained from the default IP range of CRI-O
+
+
+Step-9- Let\s install Calico as our CNI plugin.    
+    
+	curl https://docs.projectcalico.org/manifests/calico.yaml -O 
+	kubectl apply -f calico.yaml
+
+Check the status of the newly deployed components of Calico
+	kubectl get pod --all-namespaces -o wide
+	watch kubectl get pod --all-namespaces -o wide
+
+The pods seem to be in a good condition, however, the assigned IP addresses are still assigned by CRI-O, not Calico. Reboot the machine and then check again. After the reboot, everything is working fine, and the pods (calico-node, and CoreDNS) have obtained their IPs from calico
+
+To make sure that your pod is obtaining IP from the correct CNI, just examine the pod and check the annotations. For this example, I will be examining one of coredns pods
+
+	kubectl describe pod coredns-74ff55c5b-ckcsb -n kube-system | more
+
+#restart-command
+	init 6 
+
+login to master node
+
+	export KUBECONFIG=/etc/kubernetes/admin.conf   #each time you login
+	
+Once run and never run on each login below three command
+	mkdir -p $HOME/.kube
+  	sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+  	sudo chown $(id -u):$(id -g) $HOME/.kube/config
+
+To make sure that your pod is obtaining IP from the correct CNI, just examine the pod and check the annotations. For this example, I will be examining one of coredns pods
+
+
+#--------------------Worker Node Only Commands End-------------------------
+
+Step-10- Let’s join worked nodes to the cluster. Follow the same steps from 1 to 4 to prepare other nodes. Then, use the join command to join to the cluster
+
+kubeadm join 192.168.1.22:6443 --token p4qrma.yc17mron79fbtzk3 --discovery-token-ca-cert-hash sha256:7ea703793e693fd6995e76b7609590c15d1d76b59cc62332336fca4387ab3145
+
+#--------------------Worker Node Only Commands End-------------------------
+
+Your Installation of Kubernetes is completed below it the test app run commands
+
+#--------------------Master Only Commands End-------------------------
+Step-11- Great. Now. let’s create a test pod to make sure that it works properly. You can use the following pod image, or use whichever you’d like to
+
+	kubectl run my-httpd1 --image mroushdy/my-httpd:green
+	kubectl run my-httpd2 --image mroushdy/my-httpd:green
+
+	kubectl describe pod my-httpd1
+	kubectl describe pod my-httpd2
+
+The pod is healthy and has obtained an IP from calico
+
+For kubectl auto-completion for the command line, follow the steps in this guide
+https://kubernetes.io/docs/tasks/tools/#enabling-shell-autocompletion
+#--------------------Master Only Commands End-------------------------
+
+Command History
+
+[root@k8smaster ~]# history
+    1  dnf check-update
+    2  yum check-update
+    3  yum install curl
+    4  yum update -y
+    5  reboot
+    6  poweroff
+    7  ip a
+    8  yum clear
+    9  yum clean
+   10  yum clean all
+   11  yum install qemu-guest-agent
+   12  systemctl start qemu-guest-agent
+   13  reboot
+   14  systemctl start qemu-guest-agent
+   15  exit
+   16  systemctl start qemu-guest-agent
+   17  poweroff
+   18  clear
+   19  systemctl start qemu-guest-agent
+   20  yum update -y
+   21  yum install yum-utils nfs-utils bash-completion git -y
+   22  systemctl disable firewalld --now
+   23  clear
+   24  vi prep.sh
+   25  ls
+   26  pwd
+   27  
+   28  clear
+   29  
+   30  
+   31  
+   32  
+   33  
+   34  scp brajesh@192.168.1.15:/home/brajesh/prep.sh prep.sh
+   35  ls
+   36  clear
+   37  ls
+   38  ./prep.sh
+   39  ls -al
+   40  chmod a+rx prep.sh
+   41  ls -al
+   42  ./prep.sh
+   43  rpm -qa | grep kube
+   44  rpm -qa | grep crio
+   45  rpm -qa | grep cri-o
+   46  vi /usr/lib/systemd/system/kubelet.service.d/10-kubeadm.conf
+   47  systemctl daemon-reload
+   48  systemctl enable crio --now
+   49  systemctl enable kubelet --now
+   50  kubeadm init  --pod-network-cidr=10.244.0.0/16
+   51  export KUBECONFIG=/etc/kubernetes/admin.conf
+   52  kubectl get nodes
+   53  
+   54  kubectl get pod --all-namespaces
+   55  kubectl get pod --all-namespaces -o wide
+   56  curl https://docs.projectcalico.org/manifests/calico.yaml -O
+   57  kubectl apply -f calico.yaml
+   58  kubectl get pod --all-namespaces -o wide
+   59  watch kubectl get pod --all-namespaces -o wide
+   60  init 6
+   61  kubectl get pod --all-namespaces -o wide
+   62  kubectl get node
+   63  export KUBECONFIG=/etc/kubernetes/admin.conf
+   64  kubectl get node
+   65  kubectl get pod --all-namespaces -o wide
+   66  clear
+   67  kubectl get nodes
+   68  kubectl get nodes -o wide
+   69  kubectl get nodes
+   70  clear
+   71  init 6
+   72  kubectl get nodes
+   73  mkdir -p $HOME/.kube
+   74  sudo cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+   75  sudo chown $(id -u):$(id -g) $HOME/.kube/config
+   76  kubectl get nodes
+   77  reboot
+   78  kubectl get nodes
+   79  kubectl run my-httpd1 --image mroushdy/my-httpd:green
+   80  kubectl run my-httpd2 --image mroushdy/my-httpd:green
+   81  kubectl get pods
+   82  kubectl get pods -0 wide
+   83  kubectl get pods -o wide
+   84  kubectl describe pod my-httpd1
+   85  kubectl describe pod my-httpd2
+   86  clear
+   87  systemctl status kubelet
+   88  systemctl status crio
+   89  systemctl status cri-o
+   90  ls -al
+   91  history
+
+
+
+
+
